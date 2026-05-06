@@ -13,73 +13,93 @@ from pathlib import Path
 from dewet import remove_watermark, remove_text_watermark
 
 
-def process_image(
-    image: np.ndarray,
-    mode: str,
-    inpaint_method: str,
-    radius: int,
-    contour_area: int,
-    block_size: int,
-    # Manual mode coordinates
-    x1: int,
-    y1: int,
-    x2: int,
-    y2: int,
-):
-    """Process image based on selected mode."""
+def process_brush_mode(image: np.ndarray, mask_image: np.ndarray, method: str, radius: int, brush_size: int):
+    """Process image using brush-drawn mask."""
     if image is None:
-        return None
+        return None, None
 
-    # Gradio gives RGB, convert to BGR for OpenCV
     img = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-    if mode == "auto_text":
-        # Auto detect and remove text watermark
-        result = remove_text_watermark(
-            img,
-            method=inpaint_method,
-            radius=radius,
-            min_contour_area=contour_area,
-            adaptive_blocksize=block_size,
-        )
-    elif mode == "manual_rect":
-        # Manual rectangle region inpainting
-        h, w = img.shape[:2]
-        # Clamp coordinates
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w, x2), min(h, y2)
-        rw, rh = x2 - x1, y2 - y1
-
-        if rw <= 0 or rh <= 0:
-            result = img.copy()
+    # Build mask from brush overlay
+    if mask_image is not None:
+        # mask_image is RGBA or RGB with the brush strokes
+        if mask_image.shape[-1] == 4:
+            # Use alpha channel as mask
+            mask = mask_image[:, :, 3]
         else:
-            from dewet.utils import create_mask
-            mask = create_mask(img, [(x1, y1, rw, rh)])
-            result = remove_watermark(img, mask, method=inpaint_method, radius=radius)
+            # Convert to grayscale and threshold
+            gray = cv2.cvtColor(mask_image, cv2.COLOR_RGB2GRAY)
+            _, mask = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
     else:
-        result = img.copy()
+        mask = np.zeros(img.shape[:2], dtype=np.uint8)
 
-    # Convert back to RGB for Gradio display
+    if np.sum(mask) == 0:
+        # Nothing painted, return original
+        return image, None
+
+    result = remove_watermark(img, mask, method=method, radius=radius)
     result = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
-    return result
+    return result, None
+
+
+def process_auto_mode(image: np.ndarray, method: str, radius: int, contour_area: int, block_size: int):
+    """Process image using auto text detection."""
+    if image is None:
+        return None, None
+
+    img = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    result = remove_text_watermark(
+        img,
+        method=method,
+        radius=radius,
+        min_contour_area=contour_area,
+        adaptive_blocksize=block_size,
+    )
+    result = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
+    return result, None
+
+
+def save_result(result):
+    """Save result and return file path."""
+    if result is None:
+        return None
+    out_path = Path("output") / "result.png"
+    out_path.parent.mkdir(exist_ok=True)
+    cv2.imwrite(str(out_path), cv2.cvtColor(result, cv2.COLOR_RGB2BGR))
+    return str(out_path)
 
 
 with gr.Blocks(title="dewet - 图片去水印", theme=gr.themes.Soft()) as demo:
 
     gr.Markdown("# 🧹 dewet - 图片去水印工具")
-    gr.Markdown("上传带水印的图片，选择去水印方式，点击运行即可。")
+    gr.Markdown("上传带水印的图片，用画笔涂抹水印区域，点击运行即可。")
+
+    mode = gr.Radio(
+        choices=["brush", "auto_text"],
+        value="brush",
+        label="去水印方式",
+    )
+    gr.Markdown("- **画笔涂抹**（推荐）：直接在图片上涂选水印区域")
+    gr.Markdown("- **自动检测**：自动识别文字水印并去除")
 
     with gr.Row():
         with gr.Column():
-            input_img = gr.Image(label="上传图片", type="numpy", height=400)
-
-            mode = gr.Radio(
-                choices=["auto_text", "manual_rect"],
-                value="auto_text",
-                label="去水印方式",
+            input_img = gr.Image(
+                label="上传图片并涂抹水印区域",
+                type="numpy",
+                height=450,
+                tool="sketch",
+                brush=gr.Brush(colors=["#FF0000"], default_size=15),
             )
-            gr.Markdown("- **auto_text**: 自动检测文字水印并去除")
-            gr.Markdown("- **manual_rect**: 手动指定矩形区域")
+
+            with gr.Group(visible=True) as brush_group:
+                brush_size = gr.Slider(5, 80, value=15, step=1, label="画笔大小（涂大一点效果更好）")
+                gr.Markdown("💡 用鼠标在图片上涂抹水印区域，红色区域就是会被去除的部分")
+                gr.Markdown("💡 涂抹范围可以比水印大一点，效果会更好")
+
+            with gr.Group(visible=False) as auto_group:
+                contour_area = gr.Slider(10, 500, value=50, step=10, label="最小文字面积")
+                block_size = gr.Slider(3, 51, value=31, step=2, label="检测块大小")
 
             with gr.Group():
                 inpaint_method = gr.Radio(
@@ -87,57 +107,38 @@ with gr.Blocks(title="dewet - 图片去水印", theme=gr.themes.Soft()) as demo:
                     value="telea",
                     label="填充算法",
                 )
-                radius = gr.Slider(1, 15, value=3, step=1, label="填充半径（越大越平滑）")
-
-            with gr.Group(visible=True) as auto_group:
-                contour_area = gr.Slider(10, 500, value=50, step=10, label="最小文字面积")
-                block_size = gr.Slider(3, 51, value=31, step=2, label="检测块大小")
-
-            with gr.Group(visible=False) as manual_group:
-                gr.Markdown("### 输入水印矩形区域坐标")
-                gr.Markdown("用截图工具查看坐标，格式：(左上x, 左上y, 右下x, 右下y)")
-                with gr.Row():
-                    x1 = gr.Number(label="x1 (左上)", value=0, precision=0)
-                    y1 = gr.Number(label="y1 (左上)", value=0, precision=0)
-                with gr.Row():
-                    x2 = gr.Number(label="x2 (右下)", value=500, precision=0)
-                    y2 = gr.Number(label="y2 (右下)", value=100, precision=0)
+                radius = gr.Slider(1, 15, value=5, step=1, label="填充半径（越大越平滑，但也越模糊）")
 
             btn = gr.Button("🚀 开始去水印", variant="primary", size="lg")
 
         with gr.Column():
-            output_img = gr.Image(label="去水印结果", type="numpy", height=400)
-            download_btn = gr.DownloadButton(
-                label="💾 下载结果",
-                value=None,
-            )
+            output_img = gr.Image(label="去水印结果", type="numpy", height=450)
+            download_btn = gr.DownloadButton(label="💾 下载结果", value=None)
 
-    # Toggle visibility based on mode
     def toggle_mode(m):
-        if m == "auto_text":
-            return {auto_group: gr.Group(visible=True), manual_group: gr.Group(visible=False)}
+        if m == "brush":
+            return {brush_group: gr.Group(visible=True), auto_group: gr.Group(visible=False)}
         else:
-            return {auto_group: gr.Group(visible=False), manual_group: gr.Group(visible=True)}
+            return {brush_group: gr.Group(visible=False), auto_group: gr.Group(visible=True)}
 
-    mode.change(toggle_mode, inputs=mode, outputs=[auto_group, manual_group])
+    mode.change(toggle_mode, inputs=mode, outputs=[brush_group, auto_group])
 
-    def process_and_save(image, mode, method, radius, area, block, cx1, cy1, cx2, cy2):
-        result = process_image(image, mode, method, radius, area, block, cx1, cy1, cx2, cy2)
-        if result is not None:
-            out_path = Path("output") / "result.png"
-            out_path.parent.mkdir(exist_ok=True)
-            cv2.imwrite(str(out_path), cv2.cvtColor(result, cv2.COLOR_RGB2BGR))
-            return result, str(out_path)
-        return None, None
+    def run_process(image, mask_image, m, method, radius, bsize, area, block):
+        if m == "brush":
+            result, _ = process_brush_mode(image, mask_image, method, radius, bsize)
+        else:
+            result, _ = process_auto_mode(image, method, radius, area, block)
+        out = save_result(result)
+        return result, out
 
     btn.click(
-        process_and_save,
-        inputs=[input_img, mode, inpaint_method, radius, contour_area, block_size, x1, y1, x2, y2],
+        run_process,
+        inputs=[input_img, input_img, mode, inpaint_method, radius, brush_size, contour_area, block_size],
         outputs=[output_img, download_btn],
     )
 
     gr.Markdown("---")
-    gr.Markdown("💡 提示：手动指定区域的效果通常比自动检测好很多。坐标可以用截图工具量出来。")
+    gr.Markdown("💡 画笔涂抹模式效果最好，涂选范围稍微大一点，去水印效果更干净。")
     gr.Markdown("GitHub: https://github.com/phoenix-zcs/dewet")
 
 
