@@ -13,7 +13,7 @@ from pathlib import Path
 from dewet import remove_watermark, remove_text_watermark
 
 
-def process_brush_mode(image: np.ndarray, mask_image: np.ndarray, method: str, radius: int, brush_size: int):
+def process_brush_mode(image: np.ndarray, mask_image: np.ndarray, method: str, radius: int):
     """Process image using brush-drawn mask."""
     if image is None:
         return None, None
@@ -22,19 +22,15 @@ def process_brush_mode(image: np.ndarray, mask_image: np.ndarray, method: str, r
 
     # Build mask from brush overlay
     if mask_image is not None:
-        # mask_image is RGBA or RGB with the brush strokes
         if mask_image.shape[-1] == 4:
-            # Use alpha channel as mask
             mask = mask_image[:, :, 3]
         else:
-            # Convert to grayscale and threshold
             gray = cv2.cvtColor(mask_image, cv2.COLOR_RGB2GRAY)
             _, mask = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
     else:
         mask = np.zeros(img.shape[:2], dtype=np.uint8)
 
     if np.sum(mask) == 0:
-        # Nothing painted, return original
         return image, None
 
     result = remove_watermark(img, mask, method=method, radius=radius)
@@ -69,7 +65,7 @@ def save_result(result):
     return str(out_path)
 
 
-with gr.Blocks(title="dewet - 图片去水印", theme=gr.themes.Soft()) as demo:
+with gr.Blocks(title="dewet - 图片去水印") as demo:
 
     gr.Markdown("# 🧹 dewet - 图片去水印工具")
     gr.Markdown("上传带水印的图片，用画笔涂抹水印区域，点击运行即可。")
@@ -88,13 +84,21 @@ with gr.Blocks(title="dewet - 图片去水印", theme=gr.themes.Soft()) as demo:
                 label="上传图片并涂抹水印区域",
                 type="numpy",
                 height=450,
-                tool="sketch",
+                sources=["upload"],
+                show_download_button=True,
+            )
+
+            # Separate canvas for painting mask
+            mask_img = gr.ImageEditor(
+                label="🎨 在这里涂抹水印区域（用画笔涂红色）",
+                type="numpy",
+                height=450,
                 brush=gr.Brush(colors=["#FF0000"], default_size=15),
+                layers=False,
             )
 
             with gr.Group(visible=True) as brush_group:
-                brush_size = gr.Slider(5, 80, value=15, step=1, label="画笔大小（涂大一点效果更好）")
-                gr.Markdown("💡 用鼠标在图片上涂抹水印区域，红色区域就是会被去除的部分")
+                gr.Markdown("💡 **操作步骤：** 先在左边上传图片，然后在这里用鼠标涂抹水印区域")
                 gr.Markdown("💡 涂抹范围可以比水印大一点，效果会更好")
 
             with gr.Group(visible=False) as auto_group:
@@ -123,17 +127,19 @@ with gr.Blocks(title="dewet - 图片去水印", theme=gr.themes.Soft()) as demo:
 
     mode.change(toggle_mode, inputs=mode, outputs=[brush_group, auto_group])
 
-    def run_process(image, mask_image, m, method, radius, bsize, area, block):
+    def run_process(image, mask, m, method, rad, area, block):
+        if image is None:
+            return None, None
         if m == "brush":
-            result, _ = process_brush_mode(image, mask_image, method, radius, bsize)
+            result, _ = process_brush_mode(image, mask, method, rad)
         else:
-            result, _ = process_auto_mode(image, method, radius, area, block)
+            result, _ = process_auto_mode(image, method, rad, area, block)
         out = save_result(result)
         return result, out
 
     btn.click(
         run_process,
-        inputs=[input_img, input_img, mode, inpaint_method, radius, brush_size, contour_area, block_size],
+        inputs=[input_img, mask_img, mode, inpaint_method, radius, contour_area, block_size],
         outputs=[output_img, download_btn],
     )
 
