@@ -4,13 +4,24 @@ Image watermark removal tool — 图片去水印工具。
 
 Built with OpenCV and NumPy. Fast, no GPU required.
 
-## Installation
+## 🚀 Web UI (Recommended)
+
+```bash
+pip install -r requirements.txt
+python web.py
+```
+
+Open browser → **http://localhost:7860**
+
+Upload image, select mode, click "开始去水印". Done.
+
+## 📦 Installation
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Usage
+## 🐍 Python API
 
 ```python
 from dewet import load_image, remove_watermark, create_mask
@@ -26,12 +37,6 @@ result = remove_watermark(img, mask)
 from dewet import remove_text_watermark
 
 result = remove_text_watermark("watermarked.jpg")
-```
-
-## CLI Quick Start
-
-```bash
-python examples/demo.py your_image.jpg
 ```
 
 ## Methods
