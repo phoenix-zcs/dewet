@@ -13,56 +13,56 @@ from pathlib import Path
 from dewet import remove_watermark, remove_text_watermark
 
 
-def process_brush_mode(image: np.ndarray, mask_image: np.ndarray, method: str, radius: int):
-    """Process image using brush-drawn mask."""
-    if image is None:
+def process_brush(image, mask, method, radius):
+    if image is None or mask is None:
         return None, None
-
     img = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-    # Build mask from brush overlay
-    if mask_image is not None:
-        if mask_image.shape[-1] == 4:
-            mask = mask_image[:, :, 3]
+    # Extract mask from editor
+    if isinstance(mask, dict):
+        bg = mask.get("background")
+        layers = mask.get("layers", [])
+        if bg is not None and len(layers) > 0:
+            overlay = layers[0]
+            diff = cv2.absdiff(bg, overlay)
+            gray = cv2.cvtColor(diff, cv2.COLOR_RGB2GRAY)
+            _, mask_arr = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
         else:
-            gray = cv2.cvtColor(mask_image, cv2.COLOR_RGB2GRAY)
-            _, mask = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
+            mask_arr = np.zeros(img.shape[:2], dtype=np.uint8)
+    elif isinstance(mask, np.ndarray):
+        if mask.shape[-1] == 4:
+            mask_arr = mask[:, :, 3]
+        else:
+            gray = cv2.cvtColor(mask, cv2.COLOR_RGB2GRAY)
+            _, mask_arr = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
     else:
-        mask = np.zeros(img.shape[:2], dtype=np.uint8)
-
-    if np.sum(mask) == 0:
         return image, None
 
-    result = remove_watermark(img, mask, method=method, radius=radius)
-    result = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
-    return result, None
+    if np.sum(mask_arr) == 0:
+        return image, None
+
+    result = remove_watermark(img, mask_arr, method=method, radius=radius)
+    return cv2.cvtColor(result, cv2.COLOR_BGR2RGB), None
 
 
-def process_auto_mode(image: np.ndarray, method: str, radius: int, contour_area: int, block_size: int):
-    """Process image using auto text detection."""
+def process_auto(image, method, radius, contour_area, block_size):
     if image is None:
         return None, None
-
     img = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
     result = remove_text_watermark(
-        img,
-        method=method,
-        radius=radius,
-        min_contour_area=contour_area,
-        adaptive_blocksize=block_size,
+        img, method=method, radius=radius,
+        min_contour_area=contour_area, adaptive_blocksize=block_size,
     )
-    result = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
-    return result, None
+    return cv2.cvtColor(result, cv2.COLOR_BGR2RGB), None
 
 
 def save_result(result):
-    """Save result and return file path."""
     if result is None:
         return None
-    out_path = Path("output") / "result.png"
-    out_path.parent.mkdir(exist_ok=True)
-    cv2.imwrite(str(out_path), cv2.cvtColor(result, cv2.COLOR_RGB2BGR))
-    return str(out_path)
+    out = Path("output") / "result.png"
+    out.parent.mkdir(exist_ok=True)
+    cv2.imwrite(str(out), cv2.cvtColor(result, cv2.COLOR_RGB2BGR))
+    return str(out)
 
 
 with gr.Blocks(title="dewet - 图片去水印") as demo:
@@ -80,25 +80,12 @@ with gr.Blocks(title="dewet - 图片去水印") as demo:
 
     with gr.Row():
         with gr.Column():
-            input_img = gr.Image(
-                label="上传图片并涂抹水印区域",
-                type="numpy",
-                height=450,
-                sources=["upload"],
-                show_download_button=True,
-            )
+            input_img = gr.Image(label="上传图片", type="numpy", height=450)
 
-            # Separate canvas for painting mask
-            mask_img = gr.ImageEditor(
-                label="🎨 在这里涂抹水印区域（用画笔涂红色）",
-                type="numpy",
-                height=450,
-                brush=gr.Brush(colors=["#FF0000"], default_size=15),
-                layers=False,
-            )
+            mask_editor = gr.ImageEditor(label="🎨 涂抹水印区域（用红色画笔涂）", height=450)
 
             with gr.Group(visible=True) as brush_group:
-                gr.Markdown("💡 **操作步骤：** 先在左边上传图片，然后在这里用鼠标涂抹水印区域")
+                gr.Markdown("💡 操作：先上传图片 → 在画布上用红色画笔涂抹水印 → 点按钮")
                 gr.Markdown("💡 涂抹范围可以比水印大一点，效果会更好")
 
             with gr.Group(visible=False) as auto_group:
@@ -106,12 +93,8 @@ with gr.Blocks(title="dewet - 图片去水印") as demo:
                 block_size = gr.Slider(3, 51, value=31, step=2, label="检测块大小")
 
             with gr.Group():
-                inpaint_method = gr.Radio(
-                    choices=["telea", "ns"],
-                    value="telea",
-                    label="填充算法",
-                )
-                radius = gr.Slider(1, 15, value=5, step=1, label="填充半径（越大越平滑，但也越模糊）")
+                inpaint_method = gr.Radio(choices=["telea", "ns"], value="telea", label="填充算法")
+                radius = gr.Slider(1, 15, value=5, step=1, label="填充半径（越大越平滑）")
 
             btn = gr.Button("🚀 开始去水印", variant="primary", size="lg")
 
@@ -127,24 +110,21 @@ with gr.Blocks(title="dewet - 图片去水印") as demo:
 
     mode.change(toggle_mode, inputs=mode, outputs=[brush_group, auto_group])
 
-    def run_process(image, mask, m, method, rad, area, block):
-        if image is None:
-            return None, None
+    def run(image, mask, m, method, rad, area, block):
         if m == "brush":
-            result, _ = process_brush_mode(image, mask, method, rad)
+            result, _ = process_brush(image, mask, method, rad)
         else:
-            result, _ = process_auto_mode(image, method, rad, area, block)
+            result, _ = process_auto(image, method, rad, area, block)
         out = save_result(result)
         return result, out
 
     btn.click(
-        run_process,
-        inputs=[input_img, mask_img, mode, inpaint_method, radius, contour_area, block_size],
+        run,
+        inputs=[input_img, mask_editor, mode, inpaint_method, radius, contour_area, block_size],
         outputs=[output_img, download_btn],
     )
 
     gr.Markdown("---")
-    gr.Markdown("💡 画笔涂抹模式效果最好，涂选范围稍微大一点，去水印效果更干净。")
     gr.Markdown("GitHub: https://github.com/phoenix-zcs/dewet")
 
 
